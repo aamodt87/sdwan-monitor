@@ -5,8 +5,8 @@ import { getDashboard, getBFDSessions } from '../api';
 import {
   BFD_LOSS_THRESHOLD,
   effectiveState,
+  isController,
   isHub,
-  resolveRemoteName,
   stateBadge,
 } from '../utils';
 
@@ -31,7 +31,7 @@ export default function Topology() {
       const raw  = await getDashboard();
       const rows = Array.isArray(raw.tloc_summary) ? raw.tloc_summary : [];
       await Promise.allSettled(
-        rows.filter(r => !isHub(r) && r.system_ip).map(async row => {
+        rows.filter(r => !isHub(r) && !isController(r) && r.system_ip).map(async row => {
           try { row.bfdSessions = await getBFDSessions(row.system_ip); }
           catch { row.bfdSessions = []; }
         })
@@ -68,7 +68,7 @@ export default function Topology() {
     svg.call(zoom).call(zoom.transform, d3.zoomIdentity.translate(W / 2, H / 2));
 
     const hubs  = rows.filter(isHub);
-    const edges = rows.filter(r => !isHub(r));
+    const edges = rows.filter(r => !isHub(r) && !isController(r));
 
     // Nodes — give each a starting position
     const nodes = [
@@ -84,26 +84,30 @@ export default function Topology() {
       }),
     ];
 
-    // Links — one per unique (edge → hub) pair, colored by worst BFD session
+    // Links — peer-to-peer based on BFD sessions, resolve remote IP to hostname
+    const ipToHostname = {};
+    rows.forEach(r => { if (r.system_ip) ipToHostname[r.system_ip] = r.hostname; });
+
     const links = [];
+    const seen = new Set();
     edges.forEach(edge => {
-      const sessions = Array.isArray(edge.bfdSessions) ? edge.bfdSessions : [];
-      const hubWorst = {};
+      const sessions  = Array.isArray(edge.bfdSessions) ? edge.bfdSessions : [];
+      const peerWorst = {};
       sessions.forEach(s => {
-        const remote = resolveRemoteName(s['remote-system-ip']);
-        const loss   = Number(s['loss-percentage'] || 0);
-        if (hubWorst[remote] === undefined || loss > hubWorst[remote]) hubWorst[remote] = loss;
+        const peerHostname = ipToHostname[s['remote-system-ip']];
+        if (!peerHostname || peerHostname === edge.hostname) return;
+        const loss = Number(s['loss-percentage'] || 0);
+        if (peerWorst[peerHostname] === undefined || loss > peerWorst[peerHostname])
+          peerWorst[peerHostname] = loss;
       });
 
       const edgeState = effectiveState(edge);
-      const knownHubs = Object.keys(hubWorst);
-      if (!knownHubs.length) {
-        hubs.forEach(h => links.push({ source: edge.hostname, target: h.hostname, loss: 0, ok: true, edgeState }));
-      } else {
-        knownHubs.forEach(hub => {
-          links.push({ source: edge.hostname, target: hub, loss: hubWorst[hub], ok: hubWorst[hub] <= BFD_LOSS_THRESHOLD, edgeState });
-        });
-      }
+      Object.entries(peerWorst).forEach(([peer, loss]) => {
+        const key = [edge.hostname, peer].sort().join('|');
+        if (seen.has(key)) return;
+        seen.add(key);
+        links.push({ source: edge.hostname, target: peer, loss, ok: loss <= BFD_LOSS_THRESHOLD, edgeState });
+      });
     });
 
     // Link color helper
@@ -285,7 +289,7 @@ function TopoTooltip({ site, x, y }) {
             <div key={i} className="topo-tt-loss-row">
               <span style={{ opacity: 0.7 }}>{s.color}</span>
               <svg width="12" height="8" viewBox="0 0 12 8" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" style={{opacity:0.5,flexShrink:0}}><line x1="0" y1="4" x2="9" y2="4"/><polyline points="6,1 9,4 6,7"/></svg>
-              <span>{resolveRemoteName(s['remote-system-ip'])}</span>
+              <span>{s['remote-system-ip']}</span>
               <span style={{ color: '#fae114' }}>{Number(s['loss-percentage']).toFixed(1)}% loss</span>
             </div>
           ))}
