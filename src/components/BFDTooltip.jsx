@@ -31,7 +31,7 @@ function tileSortKey(t) {
   const lc        = t.color;
   const rc        = t.s.rcolor || t.color;
   const pairOrder = COLOR_PAIR_ORDER[`${lc}|${rc}`] ?? 50;
-  return hubOrder * 100 + pairOrder;
+  return pairOrder;
 }
 
 function AnimArrow() {
